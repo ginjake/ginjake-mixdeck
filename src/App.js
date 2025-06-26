@@ -45,6 +45,12 @@ const Video = styled.video`
   object-fit: contain;
 `;
 
+const Image = styled.img`
+  max-width: 90%;
+  max-height: 70vh;
+  object-fit: contain;
+`;
+
 const VideoContainer = styled.div`
   position: relative;
   display: flex;
@@ -642,6 +648,7 @@ function App() {
         nextVideo();
         break;
       case 0x30: // 再生/停止トグル
+        const currentMedia = playlistRef.current[currentIndexRef.current];
         const videoExists = !!videoRef.current;
         const isPaused = videoRef.current ? videoRef.current.paused : true;
         
@@ -649,15 +656,27 @@ function App() {
           window.electronAPI.logToConsole('midi-action', 'Play/pause button pressed', {
             videoExists,
             isPaused,
-            currentlyPlaying: isPlayingRef.current
+            currentlyPlaying: isPlayingRef.current,
+            mediaType: currentMedia?.type
           });
         } else {
           console.log('⏯️ MIDI PLAY/PAUSE BUTTON PRESSED');
           console.log('Current video exists:', videoExists);
           console.log('Current isPlaying state:', isPlayingRef.current);
+          console.log('Media type:', currentMedia?.type);
         }
         
-        // 直接的な再生/停止制御
+        // 画像の場合は再生/停止制御をスキップ
+        if (currentMedia?.type === 'image') {
+          if (window.electronAPI) {
+            window.electronAPI.logToConsole('midi-action', 'Current item is image - play/pause not applicable');
+          } else {
+            console.log('📷 Current item is image - play/pause not applicable');
+          }
+          break;
+        }
+        
+        // 動画の場合の再生/停止制御
         if (videoRef.current) {
           if (videoRef.current.paused) {
             if (window.electronAPI) {
@@ -870,21 +889,34 @@ function App() {
       <VideoPanel>
         {currentVideo && getCurrentVideoSrc() ? (
           <VideoContainer>
-            <Video
-              ref={videoRef}
-              key={currentVideo.id}
-              src={getCurrentVideoSrc()}
-              autoPlay={isPlaying}
-              loop
-              muted
-              controls={false}
-            />
-            <SeekBar onClick={handleSeekBarClick}>
-              <SeekProgress progress={duration > 0 ? (currentTime / duration) * 100 : 0} />
-            </SeekBar>
-            <TimeDisplay>
-              {formatTime(currentTime)} / {formatTime(duration)}
-            </TimeDisplay>
+            {currentVideo.type === 'video' ? (
+              <Video
+                ref={videoRef}
+                key={currentVideo.id}
+                src={getCurrentVideoSrc()}
+                autoPlay={isPlaying}
+                loop
+                muted
+                controls={false}
+              />
+            ) : (
+              <Image
+                key={currentVideo.id}
+                src={getCurrentVideoSrc()}
+                alt={currentVideo.name}
+              />
+            )}
+            
+            {currentVideo.type === 'video' && (
+              <>
+                <SeekBar onClick={handleSeekBarClick}>
+                  <SeekProgress progress={duration > 0 ? (currentTime / duration) * 100 : 0} />
+                </SeekBar>
+                <TimeDisplay>
+                  {formatTime(currentTime)} / {formatTime(duration)}
+                </TimeDisplay>
+              </>
+            )}
           </VideoContainer>
         ) : currentVideo && !getCurrentVideoSrc() ? (
           <NoVideo>
@@ -896,9 +928,9 @@ function App() {
           </NoVideo>
         ) : (
           <NoVideo>
-            動画を選択してください
+            動画・画像を選択してください
             <br />
-            右側のパネルから動画を追加できます
+            右側のパネルから動画・画像を追加できます
           </NoVideo>
         )}
       </VideoPanel>
@@ -933,7 +965,7 @@ function App() {
               active={index === currentIndex}
             >
               <PlaylistItemName onClick={() => selectVideo(index)}>
-                {video.name}
+                {video.type === 'video' ? '🎬' : '📷'} {video.name}
               </PlaylistItemName>
               <DeleteButton 
                 onClick={(e) => {
@@ -949,9 +981,15 @@ function App() {
         
         <Controls>
           <ControlButton onClick={previousVideo}>前</ControlButton>
-          <ControlButton onClick={togglePlay}>
-            {isPlaying ? '停止' : '再生'}
-          </ControlButton>
+          {currentVideo?.type === 'video' ? (
+            <ControlButton onClick={togglePlay}>
+              {isPlaying ? '停止' : '再生'}
+            </ControlButton>
+          ) : (
+            <ControlButton disabled style={{ opacity: 0.5 }}>
+              画像表示中
+            </ControlButton>
+          )}
           <ControlButton onClick={nextVideo}>次</ControlButton>
         </Controls>
       </PlaylistPanel>
