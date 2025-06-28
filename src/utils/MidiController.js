@@ -86,8 +86,6 @@ class MidiController {
       JOG_A: 0x21,
       JOG_B: 0x22,
       
-      // クロスフェーダー
-      CROSSFADER: 0x1F,
       
       // チャンネルフェーダー
       CHANNEL_A_FADER: 0x1C,

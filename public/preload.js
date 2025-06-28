@@ -5,7 +5,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   savePlaylist: (data) => ipcRenderer.invoke('save-playlist', data),
   loadPlaylist: () => ipcRenderer.invoke('load-playlist'),
   deletePlaylist: () => ipcRenderer.invoke('delete-playlist'),
-  logToConsole: (type, message, data) => ipcRenderer.invoke('log-to-console', type, message, data)
+  logToConsole: (type, message, data) => ipcRenderer.invoke('log-to-console', type, message, data),
+  writeInputLog: (type, data) => ipcRenderer.invoke('write-input-log', type, data)
 });
 
-console.log('📋 Preload script loaded - Electron API exposed');
+console.log('📋 プリロードスクリプトが読み込まれました - Electron APIが公開されました');

@@ -3,12 +3,17 @@ const path = require('path');
 const fs = require('fs');
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 
+// 入力ログファイルのパス
+const inputLogPath = path.join('E:', 'programing', 'vj', 'toAI', 'input.log');
+
 let mainWindow;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: 1400,
+    height: 900,
+    minWidth: 1200,
+    minHeight: 800,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -16,9 +21,13 @@ function createWindow() {
       webSecurity: false,
       experimentalFeatures: true, // Web MIDI API用
       allowRunningInsecureContent: true, // MIDI接続用
+      backgroundThrottling: false, // Canvas描画用
+      offscreen: false, // Canvas描画用
+      hardwareAcceleration: true, // GPU加速有効
       preload: path.join(__dirname, 'preload.js')
     },
     title: 'Ginjake MixDeck',
+    backgroundColor: '#1a1a1a', // 背景色設定
     show: false
   });
 
@@ -30,15 +39,25 @@ function createWindow() {
   );
 
   mainWindow.once('ready-to-show', () => {
-    mainWindow.show();
+    // 少し遅延してから表示（React初期化完了を待つ）
+    setTimeout(() => {
+      mainWindow.show();
+    }, 1000);
     
-    // 開発時はDevToolsを閉じる（PowerShellログを見るため）
+    // DevToolsを無効化
     // if (isDev) {
     //   mainWindow.webContents.openDevTools();
-    //   console.log('Dev tools opened for debugging');
     // }
     
-    console.log('Ginjake MixDeck started');
+  });
+
+  // ページ読み込み完了時のログ
+  mainWindow.webContents.on('did-finish-load', () => {
+  });
+
+  // ページ読み込み失敗時のログ
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+    console.error('Failed to load page:', errorCode, errorDescription);
   });
 
   mainWindow.on('closed', () => {
@@ -52,7 +71,7 @@ const playlistPath = path.join(app.getPath('userData'), 'ginjake-mixdeck-playlis
 ipcMain.handle('save-playlist', (event, data) => {
   try {
     fs.writeFileSync(playlistPath, JSON.stringify(data));
-    console.log('💾 Playlist saved to file:', playlistPath);
+    // console.log('💾 Playlist saved to file:', playlistPath);
     return { success: true };
   } catch (error) {
     console.error('❌ Failed to save playlist:', error);
@@ -64,10 +83,9 @@ ipcMain.handle('load-playlist', () => {
   try {
     if (fs.existsSync(playlistPath)) {
       const data = fs.readFileSync(playlistPath, 'utf8');
-      console.log('📁 Playlist loaded from file:', playlistPath);
+      // console.log('📁 Playlist loaded from file:', playlistPath);
       return { success: true, data: JSON.parse(data) };
     } else {
-      console.log('📁 No playlist file found');
       return { success: true, data: null };
     }
   } catch (error) {
@@ -80,7 +98,7 @@ ipcMain.handle('delete-playlist', () => {
   try {
     if (fs.existsSync(playlistPath)) {
       fs.unlinkSync(playlistPath);
-      console.log('🗑️ Playlist file deleted');
+      // console.log('🗑️ Playlist file deleted');
     }
     return { success: true };
   } catch (error) {
@@ -91,32 +109,45 @@ ipcMain.handle('delete-playlist', () => {
 
 // MIDI関連のログをPowerShellに出力（文字化け対策）
 ipcMain.handle('log-to-console', (event, type, message, data) => {
-  const timestamp = new Date().toLocaleTimeString();
+  if (type === 'debug') {
+    process.stdout.write(message + '\n');
+  } else if (type === 'midi-signal') {
+    // デバッグ：すべてのmidi-signalを表示してデータ構造を確認
+    if (data) {
+      process.stdout.write('MIDI_DEBUG: Status=' + data.status + ' Data1=' + data.data1 + ' Data2=' + data.data2 + '\n');
+      process.stdout.write('MIDI_DEBUG: Status type=' + typeof data.status + ' Data1 type=' + typeof data.data1 + '\n');
+      process.stdout.write('MIDI_DEBUG: Status hex=0x' + data.status.toString(16) + ' Data1 hex=0x' + data.data1.toString(16) + '\n');
+    }
+  }
+});
+
+// 入力ログをファイルに書き込む
+ipcMain.handle('write-input-log', (event, type, data) => {
+  process.stdout.write('WRITE_LOG_TEST: write-input-log called with type: ' + type + '\n');
   
-  switch(type) {
-    case 'midi-init':
-      console.log(`[${timestamp}] MIDI: ${message}`);
-      if (data) console.log(`[${timestamp}] Data:`, data);
-      break;
-    case 'midi-signal':
-      console.log(`[${timestamp}] MIDI SIGNAL: ${message}`);
-      if (data) {
-        console.log(`[${timestamp}] ========================`);
-        console.log(`[${timestamp}] Status: ${data.status} | Data1: ${data.data1} | Data2: ${data.data2}`);
-        console.log(`[${timestamp}] Button: ${data.buttonPressed ? 'PRESSED' : 'RELEASED'} | Control: ${data.decimal}`);
-        console.log(`[${timestamp}] ========================`);
-      }
-      break;
-    case 'midi-action':
-      console.log(`[${timestamp}] MIDI ACTION: ${message}`);
-      if (data) console.log(`[${timestamp}] Details:`, data);
-      break;
-    case 'error':
-      console.error(`[${timestamp}] ERROR: ${message}`);
-      if (data) console.error(`[${timestamp}] Error details:`, data);
-      break;
-    default:
-      console.log(`[${timestamp}] ${message}`);
+  try {
+    const logDir = 'E:\\programing\\vj\\toAI';
+    const logPath = path.join(logDir, 'input.log');
+    
+    process.stdout.write('WRITE_LOG_TEST: logPath = ' + logPath + '\n');
+    
+    if (!fs.existsSync(logDir)) {
+      fs.mkdirSync(logDir, { recursive: true });
+      process.stdout.write('WRITE_LOG_TEST: Directory created\n');
+    }
+    
+    const logEntry = {
+      timestamp: new Date().toISOString(),
+      type: type,
+      data: data
+    };
+    
+    fs.appendFileSync(logPath, JSON.stringify(logEntry) + '\n', 'utf8');
+    process.stdout.write('WRITE_LOG_TEST: File written successfully\n');
+    return { success: true };
+  } catch (error) {
+    process.stdout.write('WRITE_LOG_TEST: ERROR - ' + error.message + '\n');
+    return { success: false, error: error.message };
   }
 });
 
