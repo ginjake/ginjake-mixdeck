@@ -10,24 +10,24 @@ class MidiController {
       // Web MIDI APIを使用
       this.midiAccess = await navigator.requestMIDIAccess();
       
-      // DDJ400を探す
+      // 利用可能なMIDI入力デバイスを取得
       const inputs = this.midiAccess.inputs.values();
       
       for (let input of inputs) {
-        // DDJ400の識別
+        // カスタムキーボード（lovelive9）を優先的に探す
         if (input.name && (
-          input.name.toLowerCase().includes('ddj-400') ||
-          input.name.toLowerCase().includes('ddj400') ||
-          input.name.toLowerCase().includes('pioneer')
+          input.name.toLowerCase().includes('lovelive') ||
+          input.name.toLowerCase().includes('qmk') ||
+          input.name.toLowerCase().includes('keyboard')
         )) {
           this.input = input;
           this.input.onmidimessage = this.handleMidiMessage.bind(this);
-          console.log('DDJ400 connected:', input.name);
+          console.log('Custom keyboard connected:', input.name);
           break;
         }
       }
       
-      // DDJ400が見つからない場合は最初のMIDI入力デバイスを使用
+      // カスタムキーボードが見つからない場合は最初のMIDI入力デバイスを使用
       if (!this.input) {
         const firstInput = inputs.next().value;
         if (firstInput) {
@@ -63,47 +63,47 @@ class MidiController {
     this.midiAccess = null;
   }
 
-  // DDJ400のコントロールマッピング参考
-  static get DDJ400_MAPPING() {
+  // lovelive9キーボードのコントロールマッピング
+  static get LOVELIVE9_MAPPING() {
     return {
-      // デッキA
-      PLAY_PAUSE_A: 0x0B,
-      CUE_A: 0x0C,
-      HOT_CUE_1_A: 0x40,
-      HOT_CUE_2_A: 0x41,
-      HOT_CUE_3_A: 0x42,
-      HOT_CUE_4_A: 0x43,
+      // キーボードのMIDI CCマッピング (keymap.cで定義済み)
+      PLAYLIST1: 1,    // CC1
+      PLAYLIST2: 2,    // CC2
+      MIDI3: 3,        // CC3
+      MIDI4: 4,        // CC4
+      MIDI5: 5,        // CC5
+      MIDI6: 6,        // CC6
+      MIDI7: 7,        // CC7
+      MIDI8: 8,        // CC8
+      MIDI9: 9,        // CC9
+      MIDI10: 10,      // CC10
+      MIDI11: 11,      // CC11
+      MIDI12: 12,      // CC12
+      MIDI13: 13,      // CC13
+      MIDI14: 14       // CC14
+    };
+  }
+
+  // MIDI CCメッセージをデコード
+  decodeMidiMessage(message) {
+    const [status, cc, value] = message;
+    
+    if ((status & 0xF0) === 0xB0) { // Control Change
+      const control = Object.keys(this.constructor.LOVELIVE9_MAPPING).find(
+        key => this.constructor.LOVELIVE9_MAPPING[key] === cc
+      );
       
-      // デッキB  
-      PLAY_PAUSE_B: 0x47,
-      CUE_B: 0x48,
-      HOT_CUE_1_B: 0x50,
-      HOT_CUE_2_B: 0x51,
-      HOT_CUE_3_B: 0x52,
-      HOT_CUE_4_B: 0x53,
-      
-      // ジョグホイール
-      JOG_A: 0x21,
-      JOG_B: 0x22,
-      
-      
-      // チャンネルフェーダー
-      CHANNEL_A_FADER: 0x1C,
-      CHANNEL_B_FADER: 0x1D,
-      
-      // EQ
-      HIGH_A: 0x07,
-      MID_A: 0x0B,
-      LOW_A: 0x0F,
-      HIGH_B: 0x1B,
-      MID_B: 0x1F,
-      LOW_B: 0x23,
-      
-      // ループ
-      LOOP_IN_A: 0x54,
-      LOOP_OUT_A: 0x55,
-      LOOP_IN_B: 0x56,
-      LOOP_OUT_B: 0x57
+      return {
+        type: 'control_change',
+        control: control || `CC${cc}`,
+        value: value,
+        pressed: value > 0
+      };
+    }
+    
+    return {
+      type: 'unknown',
+      raw: message
     };
   }
 }

@@ -24,6 +24,7 @@ function createWindow() {
       backgroundThrottling: false, // Canvas描画用
       offscreen: false, // Canvas描画用
       hardwareAcceleration: true, // GPU加速有効
+      additionalArguments: ['--enable-web-midi'], // Web MIDI API明示的有効化
       preload: path.join(__dirname, 'preload.js')
     },
     title: 'Ginjake MixDeck',
@@ -123,6 +124,13 @@ ipcMain.handle('log-to-console', (event, type, message, data) => {
 
 // 入力ログをファイルに書き込む
 ipcMain.handle('write-input-log', (event, type, data) => {
+  // ターミナルに即座に出力（最優先）
+  console.log('=== ELECTRON LOG ===');
+  console.log('Type:', type);
+  console.log('Data:', data);
+  console.log('Timestamp:', new Date().toISOString());
+  console.log('=====================');
+  
   process.stdout.write('WRITE_LOG_TEST: write-input-log called with type: ' + type + '\n');
   
   try {

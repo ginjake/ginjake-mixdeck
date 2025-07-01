@@ -46,9 +46,10 @@ const PlaylistPanel = styled.div`
   background: #2a2a2a;
   padding: 10px;
   border-radius: 8px;
-  border: 1px solid #444;
+  border: ${props => props.isActive ? '3px solid #ff4444' : '1px solid #444'};
   overflow-y: auto;
   font-size: 11px;
+  box-shadow: ${props => props.isActive ? '0 0 10px rgba(255, 68, 68, 0.5)' : 'none'};
 `;
 
 const BlendPanel = styled.div`
@@ -65,18 +66,19 @@ const BlendPanel = styled.div`
 const BlendSlider = styled.input`
   flex: 1;
   height: 8px;
-  background: linear-gradient(to right, #ff6b6b, #4CAF50);
+  background: ${props => props.disabled ? '#666' : 'linear-gradient(to right, #ff6b6b, #4CAF50)'};
   border-radius: 4px;
   outline: none;
   -webkit-appearance: none;
+  opacity: ${props => props.disabled ? 0.5 : 1};
   
   &::-webkit-slider-thumb {
     -webkit-appearance: none;
     width: 20px;
     height: 20px;
     border-radius: 50%;
-    background: white;
-    cursor: pointer;
+    background: ${props => props.disabled ? '#999' : 'white'};
+    cursor: ${props => props.disabled ? 'not-allowed' : 'pointer'};
     box-shadow: 0 2px 4px rgba(0,0,0,0.3);
   }
   
@@ -84,8 +86,8 @@ const BlendSlider = styled.input`
     width: 20px;
     height: 20px;
     border-radius: 50%;
-    background: white;
-    cursor: pointer;
+    background: ${props => props.disabled ? '#999' : 'white'};
+    cursor: ${props => props.disabled ? 'not-allowed' : 'pointer'};
     border: none;
     box-shadow: 0 2px 4px rgba(0,0,0,0.3);
   }
@@ -113,9 +115,12 @@ const Video = styled.video`
 `;
 
 const Image = styled.img`
-  max-width: 90%;
-  max-height: 70vh;
+  max-width: 100%;
+  max-height: 100%;
   object-fit: contain;
+  width: auto;
+  height: auto;
+  display: block;
 `;
 
 const VideoContainer = styled.div`
@@ -270,6 +275,7 @@ function App() {
   
   // ブレンド機能
   const [blendRatio, setBlendRatio] = useState(0.5); // 0=画面1のみ, 1=画面2のみ
+  const [mixDisabled, setMixDisabled] = useState(false); // Mix無効モード
   
   // 画面1と画面2の状態
   const [currentTime1, setCurrentTime1] = useState(0);
@@ -302,6 +308,25 @@ function App() {
   // MIDI更新の最適化用
   const lastMidiUpdateRef = useRef(0);
   
+  // 現在操作中のプレイリスト (0: プレイリスト1, 1: プレイリスト2)
+  const [activePlaylist, setActivePlaylist] = useState(0);
+  const activePlaylistRef = useRef(activePlaylist);
+  
+  // MIDI連続制御用の状態管理
+  const midiControlRef = useRef({
+    // ブレンド制御
+    blendIncreasing: false,
+    blendDecreasing: false,
+    blendDoubleSpeed: false,
+    blendInterval: null,
+    
+    // 動画制御
+    rewindInterval1: null,
+    rewindInterval2: null,
+    fastForwardInterval1: null,
+    fastForwardInterval2: null
+  });
+  
   // refを常に最新に保つ
   useEffect(() => {
     playlist1Ref.current = playlist1;
@@ -331,6 +356,10 @@ function App() {
     blendRatioRef.current = blendRatio;
   }, [blendRatio]);
   
+  useEffect(() => {
+    activePlaylistRef.current = activePlaylist;
+  }, [activePlaylist]);
+  
 
 
   // デバッグ：アプリ起動時の状態確認
@@ -338,6 +367,11 @@ function App() {
     window.electronAPI.logToConsole('debug', 'STARTUP_DEBUG: App started');
     window.electronAPI.logToConsole('debug', 'STARTUP_DEBUG: electronAPI exists: true');
     window.electronAPI.logToConsole('debug', 'STARTUP_DEBUG: writeInputLog exists: ' + !!window.electronAPI?.writeInputLog);
+    
+    // ログ出力テスト
+    if (window.electronAPI?.writeInputLog) {
+      window.electronAPI.writeInputLog('startup', 'App started - writeInputLog working');
+    }
   }, []);
 
 
@@ -381,36 +415,153 @@ function App() {
         ctx.fillStyle = '#000000';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         
-        // ブレンド率をrefから取得（リアルタイム反映）
-        const currentBlendRatio = blendRatioRef.current;
-        
-        // 画面1を描画（アルファ値でブレンド）
-        if (currentVideo1) {
-          try {
-            if (currentVideo1.type === 'video' && video1 && !video1.paused && video1.readyState >= 2) {
-              ctx.globalAlpha = 1 - currentBlendRatio;
-              ctx.drawImage(video1, 0, 0, canvas.width, canvas.height);
-            } else if (currentVideo1.type === 'image' && imageCache1.current) {
-              ctx.globalAlpha = 1 - currentBlendRatio;
-              ctx.drawImage(imageCache1.current, 0, 0, canvas.width, canvas.height);
+        // Mix無効モードかブレンドモードかで描画方法を変更
+        if (mixDisabled) {
+          // Mix無効モード：プレイリスト1の上にプレイリスト2を重ね合わせ
+          
+          // プレイリスト1を背景として描画
+          if (currentVideo1) {
+            try {
+              ctx.globalAlpha = 1.0;
+              if (currentVideo1.type === 'video' && video1 && video1.readyState >= 2) {
+                ctx.drawImage(video1, 0, 0, canvas.width, canvas.height);
+              } else if (currentVideo1.type === 'image' && imageCache1.current) {
+                // 画像のアスペクト比を保持して最大サイズで描画（右下基準）
+                const img = imageCache1.current;
+                const imgAspect = img.naturalWidth / img.naturalHeight;
+                const canvasAspect = canvas.width / canvas.height;
+                
+                let drawWidth, drawHeight, drawX, drawY;
+                
+                if (imgAspect > canvasAspect) {
+                  // 画像が横長の場合、幅を基準にする
+                  drawWidth = canvas.width;
+                  drawHeight = canvas.width / imgAspect;
+                  drawX = 0;
+                  drawY = canvas.height - drawHeight; // 右下基準（下端揃え）
+                } else {
+                  // 画像が縦長の場合、高さを基準にする
+                  drawHeight = canvas.height;
+                  drawWidth = canvas.height * imgAspect;
+                  drawX = canvas.width - drawWidth; // 右下基準（右端揃え）
+                  drawY = 0;
+                }
+                
+                ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
+              }
+            } catch (error) {
+              console.warn('Video1 draw error:', error);
             }
-          } catch (error) {
-            console.warn('Video1 draw error:', error);
           }
-        }
-        
-        // 画面2を描画（アルファ値でブレンド）
-        if (currentVideo2) {
-          try {
-            if (currentVideo2.type === 'video' && video2 && !video2.paused && video2.readyState >= 2) {
-              ctx.globalAlpha = currentBlendRatio;
-              ctx.drawImage(video2, 0, 0, canvas.width, canvas.height);
-            } else if (currentVideo2.type === 'image' && imageCache2.current) {
-              ctx.globalAlpha = currentBlendRatio;
-              ctx.drawImage(imageCache2.current, 0, 0, canvas.width, canvas.height);
+          
+          // プレイリスト2を前景として描画（透過PNG対応）
+          if (currentVideo2) {
+            try {
+              ctx.globalAlpha = 1.0; // 透過PNGの透過情報をそのまま使用
+              if (currentVideo2.type === 'video' && video2 && video2.readyState >= 2) {
+                ctx.drawImage(video2, 0, 0, canvas.width, canvas.height);
+              } else if (currentVideo2.type === 'image' && imageCache2.current) {
+                // 画像のアスペクト比を保持して最大サイズで描画（右下基準）
+                const img = imageCache2.current;
+                const imgAspect = img.naturalWidth / img.naturalHeight;
+                const canvasAspect = canvas.width / canvas.height;
+                
+                let drawWidth, drawHeight, drawX, drawY;
+                
+                if (imgAspect > canvasAspect) {
+                  // 画像が横長の場合、幅を基準にする
+                  drawWidth = canvas.width;
+                  drawHeight = canvas.width / imgAspect;
+                  drawX = 0;
+                  drawY = canvas.height - drawHeight; // 右下基準（下端揃え）
+                } else {
+                  // 画像が縦長の場合、高さを基準にする
+                  drawHeight = canvas.height;
+                  drawWidth = canvas.height * imgAspect;
+                  drawX = canvas.width - drawWidth; // 右下基準（右端揃え）
+                  drawY = 0;
+                }
+                
+                ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
+              }
+            } catch (error) {
+              console.warn('Video2 draw error:', error);
             }
-          } catch (error) {
-            console.warn('Video2 draw error:', error);
+          }
+        } else {
+          // 通常のブレンドモード
+          const currentBlendRatio = blendRatioRef.current;
+          
+          // 画面1を描画（アルファ値でブレンド）
+          if (currentVideo1) {
+            try {
+              if (currentVideo1.type === 'video' && video1 && video1.readyState >= 2) {
+                ctx.globalAlpha = 1 - currentBlendRatio;
+                ctx.drawImage(video1, 0, 0, canvas.width, canvas.height);
+              } else if (currentVideo1.type === 'image' && imageCache1.current) {
+                ctx.globalAlpha = 1 - currentBlendRatio;
+                // 画像のアスペクト比を保持して最大サイズで描画（右下基準）
+                const img = imageCache1.current;
+                const imgAspect = img.naturalWidth / img.naturalHeight;
+                const canvasAspect = canvas.width / canvas.height;
+                
+                let drawWidth, drawHeight, drawX, drawY;
+                
+                if (imgAspect > canvasAspect) {
+                  // 画像が横長の場合、幅を基準にする
+                  drawWidth = canvas.width;
+                  drawHeight = canvas.width / imgAspect;
+                  drawX = 0;
+                  drawY = canvas.height - drawHeight; // 右下基準（下端揃え）
+                } else {
+                  // 画像が縦長の場合、高さを基準にする
+                  drawHeight = canvas.height;
+                  drawWidth = canvas.height * imgAspect;
+                  drawX = canvas.width - drawWidth; // 右下基準（右端揃え）
+                  drawY = 0;
+                }
+                
+                ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
+              }
+            } catch (error) {
+              console.warn('Video1 draw error:', error);
+            }
+          }
+          
+          // 画面2を描画（アルファ値でブレンド）
+          if (currentVideo2) {
+            try {
+              if (currentVideo2.type === 'video' && video2 && video2.readyState >= 2) {
+                ctx.globalAlpha = currentBlendRatio;
+                ctx.drawImage(video2, 0, 0, canvas.width, canvas.height);
+              } else if (currentVideo2.type === 'image' && imageCache2.current) {
+                ctx.globalAlpha = currentBlendRatio;
+                // 画像のアスペクト比を保持して最大サイズで描画（右下基準）
+                const img = imageCache2.current;
+                const imgAspect = img.naturalWidth / img.naturalHeight;
+                const canvasAspect = canvas.width / canvas.height;
+                
+                let drawWidth, drawHeight, drawX, drawY;
+                
+                if (imgAspect > canvasAspect) {
+                  // 画像が横長の場合、幅を基準にする
+                  drawWidth = canvas.width;
+                  drawHeight = canvas.width / imgAspect;
+                  drawX = 0;
+                  drawY = canvas.height - drawHeight; // 右下基準（下端揃え）
+                } else {
+                  // 画像が縦長の場合、高さを基準にする
+                  drawHeight = canvas.height;
+                  drawWidth = canvas.height * imgAspect;
+                  drawX = canvas.width - drawWidth; // 右下基準（右端揃え）
+                  drawY = 0;
+                }
+                
+                ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
+              }
+            } catch (error) {
+              console.warn('Video2 draw error:', error);
+            }
           }
         }
         
@@ -434,15 +585,18 @@ function App() {
         cancelAnimationFrame(animationFrameId);
       }
     };
-  }, [currentVideo1, currentVideo2]);
+  }, [currentVideo1, currentVideo2, mixDisabled]);
 
   // 画像1のキャッシュ更新
   useEffect(() => {
     if (currentVideo1 && currentVideo1.type === 'image') {
       const img = document.createElement('img');
       img.crossOrigin = 'anonymous';
+      // 透過PNG対応のために強制的にRGBA形式で読み込み
       img.onload = () => {
+        // 画像が正常に読み込まれたらキャッシュに保存
         imageCache1.current = img;
+        console.log('Image1 loaded with transparency support');
       };
       img.onerror = () => {
         console.warn('Failed to load image1');
@@ -459,8 +613,11 @@ function App() {
     if (currentVideo2 && currentVideo2.type === 'image') {
       const img = document.createElement('img');
       img.crossOrigin = 'anonymous';
+      // 透過PNG対応のために強制的にRGBA形式で読み込み
       img.onload = () => {
+        // 画像が正常に読み込まれたらキャッシュに保存
         imageCache2.current = img;
+        console.log('Image2 loaded with transparency support');
       };
       img.onerror = () => {
         console.warn('Failed to load image2');
@@ -939,6 +1096,51 @@ function App() {
     return () => window.removeEventListener('keydown', handleKeyPress);
   }, [playlist2.length]);
 
+  // 動画操作をリセットする関数
+  const resetVideoActions = useCallback(() => {
+    const control = midiControlRef.current;
+    
+    // 巻き戻し停止
+    if (control.rewindInterval1) {
+      clearInterval(control.rewindInterval1);
+      control.rewindInterval1 = null;
+    }
+    if (control.rewindInterval2) {
+      clearInterval(control.rewindInterval2);
+      control.rewindInterval2 = null;
+    }
+    
+    // 早送り停止
+    if (control.fastForwardInterval1) {
+      clearInterval(control.fastForwardInterval1);
+      control.fastForwardInterval1 = null;
+    }
+    if (control.fastForwardInterval2) {
+      clearInterval(control.fastForwardInterval2);
+      control.fastForwardInterval2 = null;
+    }
+  }, []);
+
+  // ブレンド操作をリセットする関数
+  const resetBlendActions = useCallback(() => {
+    const control = midiControlRef.current;
+    
+    // ブレンド操作停止
+    if (control.blendInterval) {
+      clearInterval(control.blendInterval);
+      control.blendInterval = null;
+    }
+    control.blendIncreasing = false;
+    control.blendDecreasing = false;
+    control.blendDoubleSpeed = false;
+  }, []);
+
+  // 全ての連続操作を停止する関数
+  const stopAllContinuousActions = useCallback(() => {
+    resetVideoActions();
+    resetBlendActions();
+  }, [resetVideoActions, resetBlendActions]);
+
   // デュアルプレイリスト対応MIDIメッセージハンドラー
   const handleMIDIMessage = useCallback((message) => {
     const [status, data1, data2] = message.data;
@@ -951,126 +1153,280 @@ function App() {
       buttonPressed: data2 > 0
     };
 
+    // midi-log.txtとターミナルにログ出力
+    if (window.electronAPI?.writeInputLog) {
+      window.electronAPI.writeInputLog('midi-message', `MIDI message received: [${status}, ${data1}, ${data2}] - ${JSON.stringify(midiData)}`);
+    }
+
     // Electron専用：MIDIログ出力
     window.electronAPI.logToConsole('midi-signal', 'MIDI signal received', midiData);
 
-    // クロスフェーダー制御 (Status=0xb6 Data1=0x1f のみ)
-    if ((status === 0xb6 || status === '0xb6' || parseInt(status) === 182 || status === 182)) {
-      if ((data1 === 0x1f || data1 === '0x1f' || parseInt(data1) === 31 || data1 === 31)) {
-        // 更新頻度制限（16ms = 60FPS）
-        const now = Date.now();
-        if (now - lastMidiUpdateRef.current < 16) {
-          return;
-        }
-        lastMidiUpdateRef.current = now;
-        
-        // Data2 (0-127) を ブレンド比率 (0-1) に変換
-        const normalizedValue = data2 / 127;
-        const preciseValue = Math.round(normalizedValue * 1000) / 1000;
-        
-        setBlendRatio(preciseValue);
-        return;
-      } else {
-        // 他のクロスフェーダー信号はブロック
-        window.electronAPI.logToConsole('midi-action', `Other crossfader blocked: Status=${status} Data1=${data1} Data2=${data2} - NO BLEND CONTROL`);
-        return;
+    // Status 176 (0xb0) のControl Changeメッセージのみ処理
+    if (status === 176) {
+      const ccNumber = parseInt(data1);
+      const ccValue = parseInt(data2);
+      const isPressed = ccValue === 127;
+      const isReleased = ccValue === 0;
+      
+      // 連続操作ボタン以外が押された場合、全ての連続操作を停止
+      if (![4, 6, 10, 11, 12].includes(ccNumber)) {
+        stopAllContinuousActions();
       }
-    }
-
-    // ボタンが押された時のみ処理（data2 > 0）
-    if (data2 === 0) {
-      window.electronAPI.logToConsole('midi-action', 'Button released - ignoring');
+      
+      window.electronAPI.logToConsole('midi-action', `CC${ccNumber}: ${ccValue} (pressed: ${isPressed}, released: ${isReleased})`);
+      
+      switch (ccNumber) {
+        case 1: // 操作対象プレイリストの切り替え
+          if (isReleased) {
+            const newPlaylist = activePlaylistRef.current === 0 ? 1 : 0;
+            setActivePlaylist(newPlaylist);
+            window.electronAPI.logToConsole('midi-action', `Switch to playlist ${newPlaylist + 1}`);
+          }
+          break;
+          
+        case 2: // 前の動画へ
+          if (isReleased) {
+            const currentPlaylist = activePlaylistRef.current;
+            if (currentPlaylist === 0) {
+              previousVideo1();
+            } else {
+              previousVideo2();
+            }
+            window.electronAPI.logToConsole('midi-action', `Previous video playlist ${currentPlaylist + 1}`);
+          }
+          break;
+          
+        case 3: // 15秒前に
+          if (isReleased) {
+            const currentPlaylist = activePlaylistRef.current;
+            const videoRef = currentPlaylist === 0 ? videoRef1 : videoRef2;
+            if (videoRef.current) {
+              videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime - 15);
+            }
+            window.electronAPI.logToConsole('midi-action', `Skip -15s playlist ${currentPlaylist + 1}`);
+          }
+          break;
+          
+        case 4: // 1秒巻き戻し
+          if (isPressed) {
+            const control = midiControlRef.current;
+            const currentPlaylist = activePlaylistRef.current;
+            const videoRef = currentPlaylist === 0 ? videoRef1 : videoRef2;
+            const intervalRef = currentPlaylist === 0 ? 'rewindInterval1' : 'rewindInterval2';
+            
+            if (videoRef.current && !control[intervalRef]) {
+              control[intervalRef] = setInterval(() => {
+                if (videoRef.current) {
+                  videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime - 1);
+                }
+              }, 100); // 100ms間隔で1秒戻す
+            }
+            window.electronAPI.logToConsole('midi-action', `Rewind 1s start playlist ${currentPlaylist + 1}`);
+          } else if (isReleased) {
+            const control = midiControlRef.current;
+            const currentPlaylist = activePlaylistRef.current;
+            const intervalRef = currentPlaylist === 0 ? 'rewindInterval1' : 'rewindInterval2';
+            
+            if (control[intervalRef]) {
+              clearInterval(control[intervalRef]);
+              control[intervalRef] = null;
+            }
+            window.electronAPI.logToConsole('midi-action', `Rewind 1s stop playlist ${currentPlaylist + 1}`);
+          }
+          break;
+          
+        case 5: // 再生/停止トグル
+          if (isReleased) {
+            const currentPlaylist = activePlaylistRef.current;
+            if (currentPlaylist === 0) {
+              togglePlay1();
+            } else {
+              togglePlay2();
+            }
+            window.electronAPI.logToConsole('midi-action', `Play/Stop toggle playlist ${currentPlaylist + 1}`);
+          }
+          break;
+          
+        case 6: // 3秒早送り
+          if (isPressed) {
+            const control = midiControlRef.current;
+            const currentPlaylist = activePlaylistRef.current;
+            const videoRef = currentPlaylist === 0 ? videoRef1 : videoRef2;
+            const intervalRef = currentPlaylist === 0 ? 'fastForwardInterval1' : 'fastForwardInterval2';
+            
+            if (videoRef.current && !control[intervalRef]) {
+              control[intervalRef] = setInterval(() => {
+                if (videoRef.current) {
+                  videoRef.current.currentTime = Math.min(videoRef.current.duration || 0, videoRef.current.currentTime + 3);
+                }
+              }, 100); // 100ms間隔で3秒進む
+            }
+            window.electronAPI.logToConsole('midi-action', `Fast forward 3s start playlist ${currentPlaylist + 1}`);
+          } else if (isReleased) {
+            const control = midiControlRef.current;
+            const currentPlaylist = activePlaylistRef.current;
+            const intervalRef = currentPlaylist === 0 ? 'fastForwardInterval1' : 'fastForwardInterval2';
+            
+            if (control[intervalRef]) {
+              clearInterval(control[intervalRef]);
+              control[intervalRef] = null;
+            }
+            window.electronAPI.logToConsole('midi-action', `Fast forward 3s stop playlist ${currentPlaylist + 1}`);
+          }
+          break;
+          
+        case 7: // 15秒後に
+          if (isReleased) {
+            const currentPlaylist = activePlaylistRef.current;
+            const videoRef = currentPlaylist === 0 ? videoRef1 : videoRef2;
+            if (videoRef.current) {
+              videoRef.current.currentTime = Math.min(videoRef.current.duration || 0, videoRef.current.currentTime + 15);
+            }
+            window.electronAPI.logToConsole('midi-action', `Skip +15s playlist ${currentPlaylist + 1}`);
+          }
+          break;
+          
+        case 8: // 次の動画へ
+          if (isReleased) {
+            const currentPlaylist = activePlaylistRef.current;
+            if (currentPlaylist === 0) {
+              nextVideo1();
+            } else {
+              nextVideo2();
+            }
+            window.electronAPI.logToConsole('midi-action', `Next video playlist ${currentPlaylist + 1}`);
+          }
+          break;
+          
+        case 9: // ブレンド値を0に
+          if (isReleased) {
+            setBlendRatio(0);
+            window.electronAPI.logToConsole('midi-action', 'Blend to 0');
+          }
+          break;
+          
+        case 10: // ブレンド値を左に
+          if (isPressed) {
+            const control = midiControlRef.current;
+            control.blendDecreasing = true;
+            
+            if (!control.blendInterval) {
+              const moveBlend = () => {
+                const speed = control.blendDoubleSpeed ? 0.06 : 0.02; // 3倍速
+                const currentBlend = blendRatioRef.current;
+                if (control.blendDecreasing && currentBlend > 0) {
+                  const newBlend = Math.max(0, currentBlend - speed);
+                  setBlendRatio(newBlend);
+                }
+              };
+              control.blendInterval = setInterval(moveBlend, 50);
+            }
+            window.electronAPI.logToConsole('midi-action', 'Blend left start');
+          } else if (isReleased) {
+            const control = midiControlRef.current;
+            control.blendDecreasing = false;
+            if (control.blendInterval && !control.blendIncreasing) {
+              clearInterval(control.blendInterval);
+              control.blendInterval = null;
+            }
+            window.electronAPI.logToConsole('midi-action', 'Blend left stop');
+          }
+          break;
+          
+        case 11: // ブレンド値移動量3倍モード
+          if (isPressed) {
+            midiControlRef.current.blendDoubleSpeed = true;
+            window.electronAPI.logToConsole('midi-action', 'Blend triple speed on');
+          } else if (isReleased) {
+            midiControlRef.current.blendDoubleSpeed = false;
+            window.electronAPI.logToConsole('midi-action', 'Blend triple speed off');
+          }
+          break;
+          
+        case 12: // ブレンド値を右に
+          if (isPressed) {
+            const control = midiControlRef.current;
+            control.blendIncreasing = true;
+            
+            if (!control.blendInterval) {
+              const moveBlend = () => {
+                const speed = control.blendDoubleSpeed ? 0.06 : 0.02; // 3倍速
+                const currentBlend = blendRatioRef.current;
+                if (control.blendIncreasing && currentBlend < 1) {
+                  const newBlend = Math.min(1, currentBlend + speed);
+                  setBlendRatio(newBlend);
+                }
+              };
+              control.blendInterval = setInterval(moveBlend, 50);
+            }
+            window.electronAPI.logToConsole('midi-action', 'Blend right start');
+          } else if (isReleased) {
+            const control = midiControlRef.current;
+            control.blendIncreasing = false;
+            if (control.blendInterval && !control.blendDecreasing) {
+              clearInterval(control.blendInterval);
+              control.blendInterval = null;
+            }
+            window.electronAPI.logToConsole('midi-action', 'Blend right stop');
+          }
+          break;
+          
+        case 13: // ブレンド値を100に
+          if (isReleased) {
+            setBlendRatio(1);
+            window.electronAPI.logToConsole('midi-action', 'Blend to 100');
+          }
+          break;
+          
+        case 14: // 未割り当て
+          if (isReleased) {
+            window.electronAPI.logToConsole('midi-action', 'CC14: Unassigned button');
+          }
+          break;
+          
+        case 15: // Mix無効モード
+          if (isReleased) {
+            setMixDisabled(!mixDisabled);
+            window.electronAPI.logToConsole('midi-action', `Mix disabled: ${!mixDisabled}`);
+          }
+          break;
+          
+        case 98: // 動画操作リセット
+          if (isReleased) {
+            resetVideoActions();
+            window.electronAPI.logToConsole('midi-action', 'Video actions reset');
+          }
+          break;
+          
+        case 99: // ブレンド操作リセット
+          if (isReleased) {
+            resetBlendActions();
+            window.electronAPI.logToConsole('midi-action', 'Blend actions reset');
+          }
+          break;
+          
+        default:
+          window.electronAPI.logToConsole('midi-action', `Unhandled CC${ccNumber}: ${ccValue}`);
+          break;
+      }
       return;
     }
 
-    window.electronAPI.logToConsole('midi-action', `Processing MIDI control: 0x${data1.toString(16)} (Status: 0x${status.toString(16)})`);
+    // 他のStatusコードの処理（必要に応じて追加）
+    window.electronAPI.logToConsole('midi-action', `Other MIDI message: Status=0x${status.toString(16)}, Data1=0x${data1.toString(16)}, Data2=${data2}`);
+  }, [togglePlay1, togglePlay2, previousVideo1, previousVideo2, nextVideo1, nextVideo2, stopAllContinuousActions, resetVideoActions, resetBlendActions, mixDisabled]);
 
-    // StatusとData1の組み合わせでデッキを判定
-    const isLeftDeck = status === 0x97;  // Status 0x97 = 左デッキ (プレイリスト1)
-    const isRightDeck = status === 0x99; // Status 0x99 = 右デッキ (プレイリスト2)
-
-    if (isLeftDeck) {
-      // プレイリスト1（左デッキ 0x97）のコントロール
-      switch(data1) {
-        case 0x30:
-          window.electronAPI.logToConsole('midi-action', 'Left deck: Playlist1 play/pause');
-          togglePlay1();
-          break;
-        case 0x31:
-          window.electronAPI.logToConsole('midi-action', 'Left deck: Playlist1 skip +3s');
-          skipVideo1(3);
-          break;
-        case 0x32:
-          window.electronAPI.logToConsole('midi-action', 'Left deck: Playlist1 skip +30s');
-          skipVideo1(30);
-          break;
-        case 0x33:
-          window.electronAPI.logToConsole('midi-action', 'Left deck: Playlist1 previous video');
-          previousVideo1();
-          break;
-        case 0x35:
-          window.electronAPI.logToConsole('midi-action', 'Left deck: Playlist1 skip -3s');
-          skipVideo1(-3);
-          break;
-        case 0x36:
-          window.electronAPI.logToConsole('midi-action', 'Left deck: Playlist1 skip -30s');
-          skipVideo1(-30);
-          break;
-        case 0x37:
-          window.electronAPI.logToConsole('midi-action', 'Left deck: Playlist1 next video');
-          nextVideo1();
-          break;
-        default:
-          window.electronAPI.logToConsole('midi-action', `Left deck unhandled: 0x${data1.toString(16)}`);
-          break;
-      }
-    } else if (isRightDeck) {
-      // プレイリスト2（右デッキ 0x99）のコントロール
-      switch(data1) {
-        case 0x30:
-          window.electronAPI.logToConsole('midi-action', 'Right deck: Playlist2 play/pause');
-          togglePlay2();
-          break;
-        case 0x31:
-          window.electronAPI.logToConsole('midi-action', 'Right deck: Playlist2 skip +3s');
-          skipVideo2(3);
-          break;
-        case 0x32:
-          window.electronAPI.logToConsole('midi-action', 'Right deck: Playlist2 skip +30s');
-          skipVideo2(30);
-          break;
-        case 0x33:
-          window.electronAPI.logToConsole('midi-action', 'Right deck: Playlist2 previous video');
-          previousVideo2();
-          break;
-        case 0x35:
-          window.electronAPI.logToConsole('midi-action', 'Right deck: Playlist2 skip -3s');
-          skipVideo2(-3);
-          break;
-        case 0x36:
-          window.electronAPI.logToConsole('midi-action', 'Right deck: Playlist2 skip -30s');
-          skipVideo2(-30);
-          break;
-        case 0x37:
-          window.electronAPI.logToConsole('midi-action', 'Right deck: Playlist2 next video');
-          nextVideo2();
-          break;
-        default:
-          window.electronAPI.logToConsole('midi-action', `Right deck unhandled: 0x${data1.toString(16)}`);
-          break;
-      }
-    } else {
-      // その他のStatus（クロスフェーダーなど）
-      window.electronAPI.logToConsole('midi-action', `Other status: 0x${status.toString(16)}, data1: 0x${data1.toString(16)} (decimal: ${data1})`);
-    }
-  }, [togglePlay1, skipVideo1, nextVideo1, previousVideo1, togglePlay2, skipVideo2, nextVideo2, previousVideo2]);
-
-  // DDJ400 MIDI対応（Electron対応強化）
+  // lovelive9キーボード MIDI対応（Electron対応強化）
   useEffect(() => {
     let midiAccess = null;
 
     const initMIDI = async () => {
       try {
+        // 基本的なログ出力テスト
+        if (window.electronAPI?.writeInputLog) {
+          window.electronAPI.writeInputLog('midi-init', '=== MIDI INIT START ===');
+        }
+        
         window.electronAPI.logToConsole('midi-init', 'MIDI support check started', {
           navigatorExists: !!navigator,
           requestMIDIAccessExists: !!navigator.requestMIDIAccess,
@@ -1081,20 +1437,32 @@ function App() {
         
         if (!navigator.requestMIDIAccess) {
           window.electronAPI.logToConsole('error', 'Web MIDI API not supported');
+          if (window.electronAPI?.writeInputLog) {
+            window.electronAPI.writeInputLog('midi-error', 'Web MIDI API not supported');
+          }
           setMidiStatus('❌ MIDI未対応');
           return;
+        }
+        
+        if (window.electronAPI?.writeInputLog) {
+          window.electronAPI.writeInputLog('midi-init', 'Web MIDI API available, requesting access...');
         }
 
         window.electronAPI.logToConsole('midi-init', 'Requesting MIDI access...');
         setMidiStatus('MIDI接続中...');
         
-        midiAccess = await navigator.requestMIDIAccess();
+        // MIDI共有オプション付きでアクセス要求
+        midiAccess = await navigator.requestMIDIAccess({ 
+          sysex: false,
+          software: true  // ソフトウェアMIDI許可
+        });
         
         window.electronAPI.logToConsole('midi-init', 'MIDI access acquired successfully', {
           inputCount: midiAccess.inputs.size
         });
 
         let connectedDevices = 0;
+        let lovelive9Found = false;
         
         for (let input of midiAccess.inputs.values()) {
           const deviceInfo = {
@@ -1107,25 +1475,51 @@ function App() {
           
           window.electronAPI.logToConsole('midi-init', 'MIDI input device found', deviceInfo);
           
-          // すべてのMIDI入力デバイスに接続（DDJ400を見逃さないため）
-          input.onmidimessage = handleMIDIMessage;
-          connectedDevices++;
+          // DDJ400は明示的に無視
+          const isDDJ400 = input.name && (
+            input.name.toLowerCase().includes('ddj-400') ||
+            input.name.toLowerCase().includes('ddj400') ||
+            input.name.toLowerCase().includes('pioneer')
+          );
           
-          window.electronAPI.logToConsole('midi-init', `Connected to MIDI device: ${input.name || 'Unknown Device'}`);
+          if (isDDJ400) {
+            window.electronAPI.logToConsole('midi-init', `DDJ400 detected but ignored: ${input.name}`);
+            continue; // DDJ400は接続しない
+          }
+          
+          // lovelive9キーボードのみ接続
+          const isLovelive9 = input.name && (
+            input.name.toLowerCase().includes('lovelive') ||
+            input.name.toLowerCase().includes('qmk') ||
+            input.name.toLowerCase().includes('keyboard') ||
+            input.name.toLowerCase().includes('midi')
+          );
+          
+          if (isLovelive9) {
+            lovelive9Found = true;
+            input.onmidimessage = handleMIDIMessage;
+            connectedDevices++;
+            window.electronAPI.logToConsole('midi-init', `lovelive9 keyboard connected: ${input.name}`);
+          } else {
+            window.electronAPI.logToConsole('midi-init', `Other MIDI device ignored: ${input.name || 'Unknown Device'}`);
+          }
         }
 
         if (connectedDevices === 0) {
-          window.electronAPI.logToConsole('error', 'No MIDI devices found', {
+          window.electronAPI.logToConsole('error', 'No lovelive9 keyboard found', {
             checkList: [
-              'DDJ400 is connected via USB',
-              'DDJ400 drivers are installed',
-              'DDJ400 is powered on'
+              'lovelive9 keyboard is connected via USB',
+              'lovelive9 keyboard is powered on',
+              'QMK firmware is properly configured'
             ]
           });
-          setMidiStatus('❌ MIDIデバイス未接続');
+          setMidiStatus('❌ lovelive9キーボード未接続');
+        } else if (lovelive9Found) {
+          window.electronAPI.logToConsole('midi-init', `MIDI connection complete - lovelive9 keyboard found`);
+          setMidiStatus(`✅ lovelive9キーボード接続済み`);
         } else {
           window.electronAPI.logToConsole('midi-init', `MIDI connection complete - connected to ${connectedDevices} device(s)`);
-          setMidiStatus(`✅ MIDI接続済み (${connectedDevices}台)`);
+          setMidiStatus(`⚠️ MIDI接続済み (${connectedDevices}台) - lovelive9未検出`);
         }
       } catch (error) {
         window.electronAPI.logToConsole('error', 'MIDI initialization failed', {
@@ -1179,6 +1573,7 @@ function App() {
       
       {/* プレイリスト1パネル */}
       <PlaylistPanel
+        isActive={activePlaylist === 0}
         onDragOver={handleDragOver1}
         onDragLeave={handleDragLeave1}
         onDrop={handleDrop1}
@@ -1219,7 +1614,13 @@ function App() {
                   key={currentVideo1.id}
                   src={getCurrentVideoSrc1()}
                   alt={currentVideo1.name}
-                  style={{ maxHeight: '100%', maxWidth: '100%' }}
+                  style={{ 
+                    maxHeight: '80px', 
+                    maxWidth: '100%', 
+                    width: 'auto', 
+                    height: 'auto',
+                    objectFit: 'contain'
+                  }}
                 />
               )}
             </div>
@@ -1229,16 +1630,13 @@ function App() {
             </div>
           )}
           
-          {currentVideo1?.type === 'video' && (
-            <>
-              <SeekBar onClick={handleSeekBarClick1}>
-                <SeekProgress progress={duration1 > 0 ? (currentTime1 / duration1) * 100 : 0} />
-              </SeekBar>
-              <TimeDisplay style={{ fontSize: '12px', textAlign: 'center' }}>
-                {formatTime(currentTime1)} / {formatTime(duration1)}
-              </TimeDisplay>
-            </>
-          )}
+          {/* シークバーと時間表示（高さを一定に保つため常に表示） */}
+          <SeekBar onClick={currentVideo1?.type === 'video' ? handleSeekBarClick1 : undefined} style={{ visibility: currentVideo1?.type === 'video' ? 'visible' : 'hidden' }}>
+            <SeekProgress progress={duration1 > 0 ? (currentTime1 / duration1) * 100 : 0} />
+          </SeekBar>
+          <TimeDisplay style={{ fontSize: '12px', textAlign: 'center', visibility: currentVideo1?.type === 'video' ? 'visible' : 'hidden' }}>
+            {currentVideo1?.type === 'video' ? `${formatTime(currentTime1)} / ${formatTime(duration1)}` : '\u00A0'}
+          </TimeDisplay>
         </div>
         
         <div style={{ maxHeight: '150px', overflowY: 'auto' }}>
@@ -1270,7 +1668,7 @@ function App() {
             </ControlButton>
           ) : (
             <ControlButton disabled style={{ opacity: 0.5 }}>
-              画像表示中
+              画像
             </ControlButton>
           )}
           <ControlButton onClick={nextVideo1}>次</ControlButton>
@@ -1279,6 +1677,7 @@ function App() {
       
       {/* プレイリスト2パネル */}
       <PlaylistPanel
+        isActive={activePlaylist === 1}
         onDragOver={handleDragOver2}
         onDragLeave={handleDragLeave2}
         onDrop={handleDrop2}
@@ -1319,7 +1718,13 @@ function App() {
                   key={currentVideo2.id}
                   src={getCurrentVideoSrc2()}
                   alt={currentVideo2.name}
-                  style={{ maxHeight: '100%', maxWidth: '100%' }}
+                  style={{ 
+                    maxHeight: '80px', 
+                    maxWidth: '100%', 
+                    width: 'auto', 
+                    height: 'auto',
+                    objectFit: 'contain'
+                  }}
                 />
               )}
             </div>
@@ -1329,16 +1734,13 @@ function App() {
             </div>
           )}
           
-          {currentVideo2?.type === 'video' && (
-            <>
-              <SeekBar onClick={handleSeekBarClick2}>
-                <SeekProgress progress={duration2 > 0 ? (currentTime2 / duration2) * 100 : 0} />
-              </SeekBar>
-              <TimeDisplay style={{ fontSize: '12px', textAlign: 'center' }}>
-                {formatTime(currentTime2)} / {formatTime(duration2)}
-              </TimeDisplay>
-            </>
-          )}
+          {/* シークバーと時間表示（高さを一定に保つため常に表示） */}
+          <SeekBar onClick={currentVideo2?.type === 'video' ? handleSeekBarClick2 : undefined} style={{ visibility: currentVideo2?.type === 'video' ? 'visible' : 'hidden' }}>
+            <SeekProgress progress={duration2 > 0 ? (currentTime2 / duration2) * 100 : 0} />
+          </SeekBar>
+          <TimeDisplay style={{ fontSize: '12px', textAlign: 'center', visibility: currentVideo2?.type === 'video' ? 'visible' : 'hidden' }}>
+            {currentVideo2?.type === 'video' ? `${formatTime(currentTime2)} / ${formatTime(duration2)}` : '\u00A0'}
+          </TimeDisplay>
         </div>
         
         <div style={{ maxHeight: '150px', overflowY: 'auto' }}>
@@ -1370,7 +1772,7 @@ function App() {
             </ControlButton>
           ) : (
             <ControlButton disabled style={{ opacity: 0.5 }}>
-              画像表示中
+              画像
             </ControlButton>
           )}
           <ControlButton onClick={nextVideo2}>次</ControlButton>
@@ -1388,15 +1790,21 @@ function App() {
             max="1"
             step="0.001"
             value={blendRatio}
+            disabled={mixDisabled}
             onChange={(e) => {
-              const newValue = parseFloat(e.target.value);
-              setBlendRatio(newValue);
+              if (!mixDisabled) {
+                const newValue = parseFloat(e.target.value);
+                setBlendRatio(newValue);
+              }
             }}
           />
           <span>画面2</span>
         </div>
-        <div style={{ minWidth: '80px', textAlign: 'center', fontSize: '14px', fontWeight: 'bold' }}>
-          {(blendRatio * 100).toFixed(1)}%
+        <div style={{ minWidth: '80px', textAlign: 'center', fontSize: '14px', fontWeight: 'bold', color: mixDisabled ? '#999' : 'white' }}>
+          {mixDisabled ? 'MIX無効' : `${(blendRatio * 100).toFixed(1)}%`}
+        </div>
+        <div style={{ fontSize: '12px', color: '#888', marginLeft: '10px' }}>
+          操作中: プレイリスト{activePlaylist + 1}
         </div>
       </BlendPanel>
     </AppContainer>

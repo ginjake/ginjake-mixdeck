@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install)",
+      "Bash(npm install:*)",
+      "Bash(npm uninstall:*)",
+      "Bash(npx electron:*)",
+      "Bash(npm run:*)",
+      "Bash(npm start)",
+      "Bash(pkill:*)",
+      "Bash(ls:*)",
+      "Bash(timeout 60s npm run build)",
+      "Bash(ss:*)",
+      "Bash(kill:*)",
+      "Bash(git init:*)",
+      "Bash(git add:*)",
+      "Bash(rm:*)",
+      "Bash(git remote add:*)",
+      "Bash(git branch:*)",
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(timeout 30 npm start 2 >& 1)",
+      "Bash(true)",
+      "Bash(npx react-scripts build:*)",
+      "Bash(timeout 20 npm start 2>&1)",
+      "Bash(curl:*)",
+      "Bash(timeout 30 npm run build)",
+      "Bash(npx eslint:*)",
+      "Bash(sed:*)",
+      "Bash(rg:*)",
+      "WebFetch(domain:scrapbox.io)",
+      "Bash(make:*)",
+      "Bash(cat:*)",
+      "Bash(git rm:*)"
+    ],
+    "deny": []
+  }
+}
